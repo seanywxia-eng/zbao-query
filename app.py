@@ -5,78 +5,65 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # 页面配置
-st.set_page_config(page_title="ZBAO 股价查询系统", layout="wide")
+st.set_page_config(page_title="ZBAO 数据查询", layout="wide")
 
-st.title("📈 ZBAO (Zhibao Technology) 股价信息查询系统")
-st.markdown("查询纳斯达克上市公司 **ZBAO** 的历史股价、成交信息及市值。")
+st.title("📈 ZBAO (致保科技) 股价查询")
 
-# 侧边栏配置
-st.sidebar.header("查询参数")
+# --- 这里是关键修改：直接设置 ZBAO 的总股本，避免调用出错的 info 接口 ---
+# 根据公开信息，ZBAO 总股本约为 33,270,000 股
+SHARES_OUTSTANDING = 33270000 
+
+# 侧边栏
+st.sidebar.header("查询设置")
+query_mode = st.sidebar.radio("选择模式", ["单日详细", "时间段表格"])
+
 ticker_symbol = "ZBAO"
-query_type = st.sidebar.selectbox("选择查询模式", ["单日查询", "时间段查询"])
 
-# 获取总股本 (用于计算市值)
-@st.cache_data
-def get_stock_info():
-    stock = yf.Ticker(ticker_symbol)
-    return stock.info
-
-stock_info = get_stock_info()
-shares_outstanding = stock_info.get('sharesOutstanding', 33270000) # 若获取失败则使用默认值
-
-if query_type == "单日查询":
-    target_date = st.sidebar.date_input("选择日期", datetime.now() - timedelta(days=1))
-    if st.sidebar.button("查询"):
-        # 获取数据 (需要获取前后两天确保覆盖)
-        start_d = target_date
-        end_d = target_date + timedelta(days=1)
-        df = yf.download(ticker_symbol, start=start_d, end=end_d)
+if query_mode == "单日详细":
+    query_date = st.sidebar.date_input("选择日期", datetime.now() - timedelta(days=1))
+    if st.sidebar.button("开始查询"):
+        # 抓取两天数据以确保包含目标日
+        data = yf.download(ticker_symbol, start=query_date, end=query_date + timedelta(days=2))
         
-        if not df.empty:
-            row = df.iloc[0]
-            mkt_cap = row['Close'] * shares_outstanding
-            turnover = ((row['Open'] + row['Close']) / 2) * row['Volume']
+        if not data.empty:
+            # 这里的 .iloc[0] 表示取选定日期的那一行
+            day_data = data.iloc[0]
+            close_price = float(day_data['Close'])
+            vol = int(day_data['Volume'])
+            avg_price = (float(day_data['Open']) + close_price) / 2
             
-            # 友好显示
-            cols = st.columns(4)
-            cols[0].metric("开盘价", f"${row['Open']:.4f}")
-            cols[1].metric("最高价", f"${row['High']:.4f}")
-            cols[2].metric("最低价", f"${row['Low']:.4f}")
-            cols[3].metric("收盘价", f"${row['Close']:.4f}")
+            # 显示指标
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("开盘价", f"${day_data['Open']:.4f}")
+            c2.metric("收盘价", f"${close_price:.4f}")
+            c3.metric("最高价", f"${day_data['High']:.4f}")
+            c4.metric("最低价", f"${day_data['Low']:.4f}")
             
-            cols2 = st.columns(3)
-            cols2[0].metric("成交量", f"{int(row['Volume']):,}")
-            cols2[1].metric("估算成交额", f"${turnover:,.2f}")
-            cols2[2].metric("收盘总市值", f"${mkt_cap:,.2f}")
+            c5, c6, c7 = st.columns(3)
+            c5.metric("成交量", f"{vol:,}")
+            c6.metric("估算成交额", f"${(avg_price * vol):,.2f}")
+            c7.metric("总市值", f"${(close_price * SHARES_OUTSTANDING):,.2f}")
         else:
-            st.error("该日期无交易数据（可能是周末或节假日）。")
+            st.warning("该日期没有交易数据，请尝试选择工作日。")
 
 else:
-    col_date = st.sidebar.columns(2)
-    start_date = col_date[0].date_input("开始日期", datetime.now() - timedelta(days=30))
-    end_date = col_date[1].date_input("结束日期", datetime.now())
+    col_d = st.sidebar.columns(2)
+    start_d = col_d[0].date_input("开始", datetime.now() - timedelta(days=30))
+    end_d = col_d[1].date_input("结束", datetime.now())
     
-    if st.sidebar.button("生成表格"):
-        df = yf.download(ticker_symbol, start=start_date, end=end_date)
+    if st.sidebar.button("生成报表"):
+        df = yf.download(ticker_symbol, start=start_d, end=end_d)
         if not df.empty:
-            # 数据加工
+            # 计算额外列
             df['成交额(估算)'] = ((df['Open'] + df['Close']) / 2) * df['Volume']
-            df['收盘后总市值'] = df['Close'] * shares_outstanding
+            df['总市值'] = df['Close'] * SHARES_OUTSTANDING
             
-            # 格式化表格
-            display_df = df[['Open', 'Close', 'High', 'Low', 'Volume', '成交额(估算)', '收盘后总市值']].copy()
-            display_df.index = display_df.index.strftime('%Y-%m-%d')
+            # 格式化并显示表格
+            st.dataframe(df.style.format("${:.2f}"), use_container_width=True)
             
-            st.subheader(f"{start_date} 至 {end_date} 数据报表")
-            st.dataframe(display_df.style.format("${:.2f}"), use_container_width=True)
-            
-            # 绘制趋势图
-            fig = go.Figure(data=[go.Candlestick(x=df.index,
-                            open=df['Open'], high=df['High'],
-                            low=df['Low'], close=df['Close'])])
-            fig.update_layout(title="价格走势 K 线图", xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
+            # 简单的趋势线
+            st.line_chart(df['Close'])
         else:
-            st.warning("所选时间段内没有数据。")
+            st.error("未找到相关数据。")
 
-st.info("注：市值计算基于最新公开的发行股本数。成交额为基于均价的估算值。")
+st.caption("注：市值基于固定股本数 33.27M 计算；成交额为估算值。数据来源: Yahoo Finance")
